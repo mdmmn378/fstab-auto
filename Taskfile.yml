@@ -93,7 +93,7 @@ tasks:
         msg: "Cargo.toml is not at {{.CLI_ARGS}}. Run `task bump -- {{.CLI_ARGS}}`, commit and push first."
     cmds:
       - gh workflow run release.yml --field version={{.CLI_ARGS}}
-      - echo "Started. Follow it with: gh run watch"
+      - 'echo "Started. Follow it with: gh run watch"'
 
   clean:
     desc: Remove build output

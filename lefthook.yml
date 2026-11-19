@@ -1,0 +1,18 @@
+# Git hooks, managed by https://lefthook.dev — install with `task setup`.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: format
+      glob: "*.rs"
+      run: cargo fmt --check
+    - name: lint
+      glob: "*.{rs,toml}"
+      run: cargo clippy --all-targets --locked -- -D warnings
+    - name: shell syntax
+      glob: "*.sh"
+      run: for f in {staged_files}; do sh -n "$f" 2>/dev/null || bash -n "$f" || exit 1; done
+
+pre-push:
+  jobs:
+    - name: test
+      run: cargo test --locked

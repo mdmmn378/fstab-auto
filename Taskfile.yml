@@ -1,0 +1,101 @@
+# https://taskfile.dev — run `task` to list everything.
+version: "3"
+
+vars:
+  COMPOSE: docker compose -f docker/compose.yaml
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  setup:
+    desc: Install the git hooks (run once after cloning)
+    cmds:
+      - lefthook install
+
+  run:
+    desc: Start the TUI in dry-run mode (safe on any machine)
+    cmds:
+      - cargo run -- --dry-run {{.CLI_ARGS}}
+
+  build:
+    desc: Build the optimized binary into target/release
+    cmds:
+      - cargo build --release --locked
+
+  fmt:
+    desc: Format the code
+    cmds:
+      - cargo fmt
+
+  fmt:check:
+    desc: Fail if the code is not formatted
+    cmds:
+      - cargo fmt --check
+
+  lint:
+    desc: Run clippy, treating warnings as errors
+    cmds:
+      - cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    desc: Run the unit tests
+    cmds:
+      - cargo test --locked
+
+  check:
+    desc: Everything CI runs (format, lint, unit tests)
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+
+  e2e:
+    desc: Mount a real Samba share from the TUI inside Docker and verify the result
+    cmds:
+      - defer: "{{.COMPOSE}} down --volumes --remove-orphans"
+      - "{{.COMPOSE}} up --build --abort-on-container-exit --exit-code-from client"
+
+  e2e:shell:
+    desc: Open a shell in the test client (try `sudo -u alice fstab-auto`; NAS password is in $NAS_PASSWORD)
+    cmds:
+      - defer: "{{.COMPOSE}} down --volumes --remove-orphans"
+      - "{{.COMPOSE}} up --build --detach nas"
+      - "{{.COMPOSE}} run --rm client bash"
+
+  completions:
+    desc: Generate shell completion scripts into dist/completions
+    cmds:
+      - mkdir -p dist/completions
+      - cargo run --quiet -- completions bash > dist/completions/fstab-auto.bash
+      - cargo run --quiet -- completions zsh > dist/completions/_fstab-auto
+      - cargo run --quiet -- completions fish > dist/completions/fstab-auto.fish
+
+  bump:
+    desc: "Set the version in Cargo.toml and Cargo.lock: task bump -- 0.2.0"
+    preconditions:
+      - sh: echo "{{.CLI_ARGS}}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+        msg: "Pass a semantic version without the v prefix, e.g. `task bump -- 0.2.0`"
+    cmds:
+      - perl -0pi -e 's/^version = "[^"]*"$/version = "{{.CLI_ARGS}}"/m' Cargo.toml
+      - cargo check --quiet
+      - 'echo "Version is now {{.CLI_ARGS}}. Commit and push, then run: task release -- {{.CLI_ARGS}}"'
+
+  release:
+    desc: "Trigger the Release workflow on GitHub: task release -- 0.2.0"
+    preconditions:
+      - sh: echo "{{.CLI_ARGS}}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+        msg: "Pass a semantic version without the v prefix, e.g. `task release -- 0.2.0`"
+      - sh: grep -q '^version = "{{.CLI_ARGS}}"$' Cargo.toml
+        msg: "Cargo.toml is not at {{.CLI_ARGS}}. Run `task bump -- {{.CLI_ARGS}}`, commit and push first."
+    cmds:
+      - gh workflow run release.yml --field version={{.CLI_ARGS}}
+      - echo "Started. Follow it with: gh run watch"
+
+  clean:
+    desc: Remove build output
+    cmds:
+      - cargo clean

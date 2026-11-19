@@ -1,0 +1,25 @@
+# End-to-end test bench: `task e2e` (or docker compose -f docker/compose.yaml up
+# --build --abort-on-container-exit --exit-code-from client).
+name: fstab-auto-e2e
+
+services:
+  nas:
+    build: ./nas
+    hostname: nas01
+    environment:
+      NAS_USER: alice
+      NAS_PASSWORD: "p@ss,w0rd! x"
+    networks:
+      default:
+        aliases: [nas01]
+
+  client:
+    build:
+      context: ..
+      dockerfile: docker/client.Dockerfile
+    depends_on: [nas]
+    # Mounting CIFS needs CAP_SYS_ADMIN and access to the kernel's cifs module.
+    privileged: true
+    environment:
+      NAS_PASSWORD: "p@ss,w0rd! x"
+      TERM: xterm-256color

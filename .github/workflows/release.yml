@@ -1,0 +1,133 @@
+name: Release
+run-name: Release v${{ inputs.version }}
+
+# Started by hand: Actions -> Release -> "Run workflow", or `task release -- 0.2.0`.
+# It asks for the version, builds binaries for Linux (amd64, arm64) and macOS
+# (Apple silicon) with shell completions for that exact commit,
+# then creates the git tag v<version> and the GitHub release in one step.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v prefix (must match Cargo.toml), e.g. 0.2.0"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as a pre-release (not offered by the installer as latest)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$VERSION' is not a semantic version like 0.2.0 (no v prefix)."
+            exit 1
+          fi
+          manifest=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$manifest" != "$VERSION" ]; then
+            echo "::error::Cargo.toml is at $manifest but $VERSION was requested. Run 'task bump -- $VERSION', commit, push, and start the release again."
+            exit 1
+          fi
+          tag="v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Linux binaries are static (musl), so they run on any distribution.
+          - target: x86_64-unknown-linux-musl # amd64
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl # arm64
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin # Apple silicon (dry-run only for now)
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          name="fstab-auto-$TARGET"
+          bin="target/$TARGET/release/fstab-auto"
+          mkdir -p "dist/$name/completions"
+          cp "$bin" LICENSE README.md "dist/$name/"
+          "$bin" --version
+          # Every runner builds for its own CPU, so the fresh binary can
+          # generate its own completion scripts.
+          "$bin" completions bash > "dist/$name/completions/fstab-auto.bash"
+          "$bin" completions zsh > "dist/$name/completions/_fstab-auto"
+          "$bin" completions fish > "dist/$name/completions/fstab-auto.fish"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          else
+            shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Tag and publish
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "fstab-auto $TAG" \
+            --generate-notes \
+            ${{ inputs.prerelease && '--prerelease' || '--latest' }}
